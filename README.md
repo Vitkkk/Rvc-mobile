@@ -2,57 +2,75 @@
 
 Android-first implementation of Retrieval-based Voice Conversion.
 
-## Architecture decision
+## Architecture
 
-RVC Mobile is built as a native Android application rather than a desktop WebUI wrapped in WebView. The original RVC pipeline depends heavily on desktop Python packages such as PyTorch, FAISS, librosa/parselmouth, and optional CUDA paths. Those dependencies are not treated as Android requirements.
+RVC Mobile is a native Android application rather than the desktop RVC WebUI placed inside a WebView. The desktop project depends on Python/PyTorch, FAISS, audio-science packages and optional CUDA paths which are not assumed to exist on Android.
 
 The mobile architecture is split into:
 
 - Kotlin + Jetpack Compose + Material 3 UI
-- Android Storage Access Framework for user-selected files/folders
-- ARM64-first native runtime
-- ONNX Runtime / native backends for portable inference components
-- downloadable optional model assets rather than bundling large AI weights in the APK
-- CPU fallback with room for NNAPI/Vulkan-compatible execution providers when practical
+- Android Storage Access Framework / share intents for user files
+- ARM64-first runtime
+- a clean `RvcEngine` boundary so inference backends can evolve independently from the UI
+- ONNX/native runtimes for portable inference components
+- optional downloadable AI weights rather than a huge base APK
+- CPU fallback with hardware-specific acceleration added only where it is actually supported
 
-## Compatibility goals
+## Implemented so far
 
-Model import will preserve common RVC ecosystem files (`.pth`, `.index`, `.zip`). Imported checkpoints are treated as source model packages. Android inference may require conversion/caching to a portable runtime representation; the app should not invent a proprietary user-facing model format when avoidable.
+### Phase 1 foundation
 
-RVC v1/v2 compatibility remains a primary target. The upstream implementation uses different synthesizer input dimensions for v1 and v2 and optional F0-guided variants, while the retrieval stage uses an index over extracted content features.
+- native Android project targeting `arm64-v8a`
+- touch-first home navigation
+- Voice Conversion screen foundation with audio picker, pitch, index-rate and protect controls
+- persistent Voice Models library
+- import of `.pth`, `.index` and `.zip`
+- automatic ZIP scanning for RVC checkpoint/index files
+- pairing separately imported PTH and INDEX files with the same model name
+- import through Android file picker
+- Android share-to-RVC-Mobile flow for model files
+- model storage usage display and deletion
+- device profiling for RAM, free storage, Vulkan availability and a recommended performance/training profile
+- inference engine contract ready for Android-native backends
+- GitHub Actions debug APK build
 
-## Roadmap
+## Model compatibility strategy
 
-### Phase 1
-- Native Android application
-- Touch-first home UI
-- File management foundation
-- RVC model import/library foundation
+Common RVC ecosystem files remain user-facing inputs (`.pth`, `.index`, `.zip`). Checkpoints are preserved when imported. Android inference may create a private runtime cache such as ONNX/ORT/native tensors, but the app should not require users to convert their model manually or adopt a proprietary replacement format.
+
+RVC v1/v2 and F0-guided models remain primary compatibility targets. RMVPE is the first planned pitch backend.
+
+## Next work
 
 ### Phase 2
-- RVC inference runtime
-- RMVPE
-- Audio conversion/export
 
-### Phase 3
-- AI Cover workflow
-- Vocal separation and remixing
+- inspect/convert supported RVC checkpoints into an Android executable graph
+- RMVPE Android runtime
+- content feature extractor (HuBERT/ContentVec-compatible path)
+- synthesizer inference
+- retrieval/index implementation
+- FFmpeg/media decoding and WAV export
+- conversion progress, foreground processing and A/B player
 
-### Phase 4
-- Dataset creation and preprocessing
+### Later phases
 
-### Phase 5
-- On-device training experiments, checkpoints and index creation
-
-### Phase 6
-- GPU/runtime optimization, memory reduction and benchmarks
+- AI Cover and vocal separation
+- dataset recorder/import/preprocessing
+- on-device training experiments and checkpoint resume
+- index creation
+- thermal throttling and background training service
+- GPU/runtime optimization and benchmark profiles
 
 ## Build
 
-Initial target is `arm64-v8a`.
+Initial target: `arm64-v8a`.
+
+The repository currently uses a system Gradle build in CI:
 
 ```bash
-./gradlew assembleDebug
+gradle :app:assembleDebug
 ```
 
-The repository is currently in early Phase 1 and does not yet contain the complete inference or training runtime.
+GitHub Actions runs the same build on pushes to `main` and uploads `RVC-Mobile-debug` when compilation succeeds.
+
+A Gradle Wrapper can be committed once generated from a standard Gradle installation; until then the CI workflow pins the Gradle version explicitly.
