@@ -1,5 +1,7 @@
 package com.vitkkk.rvcmobile
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,6 +26,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,26 +38,27 @@ import androidx.compose.ui.unit.dp
 import com.vitkkk.rvcmobile.data.ModelImporter
 import com.vitkkk.rvcmobile.data.ModelRepository
 import com.vitkkk.rvcmobile.model.RvcModel
+import com.vitkkk.rvcmobile.performance.DeviceProfiler
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { RvcMobileApp() } }
+        @Suppress("DEPRECATION")
+        val sharedUri = if (intent?.action == Intent.ACTION_SEND) {
+            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        } else null
+        setContent { MaterialTheme { RvcMobileApp(sharedUri) } }
     }
 }
 
 private enum class Screen { HOME, CONVERT, COVER, MODELS, TRAIN, FILES, SETTINGS }
 
-private data class HomeAction(
-    val title: String,
-    val subtitle: String,
-    val screen: Screen
-)
+private data class HomeAction(val title: String, val subtitle: String, val screen: Screen)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RvcMobileApp() {
-    var screen by remember { mutableStateOf(Screen.HOME) }
+private fun RvcMobileApp(sharedUri: Uri?) {
+    var screen by remember { mutableStateOf(if (sharedUri != null) Screen.MODELS else Screen.HOME) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -69,8 +73,9 @@ private fun RvcMobileApp() {
     ) { padding ->
         when (screen) {
             Screen.HOME -> HomeScreen(Modifier.padding(padding)) { screen = it }
-            Screen.MODELS -> ModelsScreen(Modifier.padding(padding))
+            Screen.MODELS -> ModelsScreen(Modifier.padding(padding), sharedUri)
             Screen.CONVERT -> VoiceConversionScreen(Modifier.padding(padding))
+            Screen.SETTINGS -> SettingsScreen(Modifier.padding(padding))
             else -> ComingSoonScreen(Modifier.padding(padding), screenTitle(screen))
         }
     }
@@ -86,18 +91,12 @@ private fun HomeScreen(modifier: Modifier, onOpen: (Screen) -> Unit) {
         HomeAction("Files", "Gerenciar áudios, datasets, covers e exports", Screen.FILES),
         HomeAction("Settings", "Desempenho, componentes e benchmark", Screen.SETTINGS)
     )
-
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
-            Text(
-                "RVC para Android, feito para touchscreen.",
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
+        item { Text("RVC para Android, feito para touchscreen.", style = MaterialTheme.typography.titleMedium) }
         items(actions) { action ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
@@ -106,9 +105,7 @@ private fun HomeScreen(modifier: Modifier, onOpen: (Screen) -> Unit) {
                 ) {
                     Text(action.title, style = MaterialTheme.typography.titleLarge)
                     Text(action.subtitle)
-                    Button(onClick = { onOpen(action.screen) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Abrir")
-                    }
+                    Button(onClick = { onOpen(action.screen) }, modifier = Modifier.fillMaxWidth()) { Text("Abrir") }
                 }
             }
         }
@@ -116,22 +113,29 @@ private fun HomeScreen(modifier: Modifier, onOpen: (Screen) -> Unit) {
 }
 
 @Composable
-private fun ModelsScreen(modifier: Modifier) {
+private fun ModelsScreen(modifier: Modifier, sharedUri: Uri?) {
     val context = LocalContext.current
     val repository = remember { ModelRepository(context) }
     val importer = remember { ModelImporter(context, repository) }
     var models by remember { mutableStateOf(repository.list()) }
     var status by remember { mutableStateOf("Importe um .pth, .index ou .zip do armazenamento.") }
+    var handledSharedUri by remember { mutableStateOf(false) }
+
+    fun doImport(uri: Uri) {
+        runCatching { importer.importUri(uri) }
+            .onSuccess { result -> status = result.message; models = repository.list() }
+            .onFailure { status = "Falha ao importar: ${it.message ?: "erro desconhecido"}" }
+    }
+
+    LaunchedEffect(sharedUri) {
+        if (sharedUri != null && !handledSharedUri) {
+            handledSharedUri = true
+            doImport(sharedUri)
+        }
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            runCatching { importer.importUri(uri) }
-                .onSuccess {
-                    status = it.message
-                    models = repository.list()
-                }
-                .onFailure { status = "Falha ao importar: ${it.message ?: "erro desconhecido"}" }
-        }
+        if (uri != null) doImport(uri)
     }
 
     LazyColumn(
@@ -145,17 +149,11 @@ private fun ModelsScreen(modifier: Modifier) {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Importar modelo") }
         }
-        item { Text(status, style = MaterialTheme.typography.bodyMedium) }
+        item { Text(status) }
         item { Text("${models.size} modelo(s) • ${formatBytes(repository.totalSizeBytes())}") }
-
         if (models.isEmpty()) {
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Text("Sua biblioteca está vazia.", modifier = Modifier.padding(18.dp))
-                }
-            }
+            item { Card(modifier = Modifier.fillMaxWidth()) { Text("Sua biblioteca está vazia.", modifier = Modifier.padding(18.dp)) } }
         }
-
         items(models, key = { it.id }) { model ->
             ModelCard(model) {
                 repository.delete(model.id)
@@ -193,55 +191,75 @@ private fun VoiceConversionScreen(modifier: Modifier) {
     var pitch by remember { mutableFloatStateOf(0f) }
     var indexRate by remember { mutableFloatStateOf(0.75f) }
     var protect by remember { mutableFloatStateOf(0.33f) }
+    var audioName by remember { mutableStateOf<String?>(null) }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        audioName = uri?.lastPathSegment
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item { Text(if (models.isEmpty()) "Nenhum modelo importado." else "Modelo: ${models.first().name}", style = MaterialTheme.typography.titleMedium) }
         item {
-            Text(
-                if (models.isEmpty()) "Nenhum modelo importado. Vá em Voice Models primeiro."
-                else "Modelo: ${models.first().name}",
-                style = MaterialTheme.typography.titleMedium
-            )
+            Button(onClick = { audioPicker.launch(arrayOf("audio/*", "video/*")) }, modifier = Modifier.fillMaxWidth()) {
+                Text(audioName ?: "Escolher áudio")
+            }
         }
         item {
             Text("Pitch: ${pitch.toInt()} semitons")
             Slider(value = pitch, onValueChange = { pitch = it }, valueRange = -24f..24f, steps = 47)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(onClick = { pitch = -12f }) { Text("-12") }
-                OutlinedButton(onClick = { pitch -= 1f }) { Text("-1") }
+                OutlinedButton(onClick = { pitch = (pitch - 1f).coerceAtLeast(-24f) }) { Text("-1") }
                 OutlinedButton(onClick = { pitch = 0f }) { Text("0") }
-                OutlinedButton(onClick = { pitch += 1f }) { Text("+1") }
+                OutlinedButton(onClick = { pitch = (pitch + 1f).coerceAtMost(24f) }) { Text("+1") }
                 OutlinedButton(onClick = { pitch = 12f }) { Text("+12") }
             }
         }
-        item {
-            Text("F0: RMVPE (backend será conectado na Fase 2)")
-        }
-        item {
-            Text("Index Rate: ${"%.2f".format(indexRate)}")
-            Slider(value = indexRate, onValueChange = { indexRate = it })
-        }
-        item {
-            Text("Protect: ${"%.2f".format(protect)}")
-            Slider(value = protect, onValueChange = { protect = it }, valueRange = 0f..0.5f)
-        }
+        item { Text("F0: RMVPE — prioridade do primeiro backend Android") }
+        item { Text("Index Rate: ${"%.2f".format(indexRate)}"); Slider(value = indexRate, onValueChange = { indexRate = it }) }
+        item { Text("Protect: ${"%.2f".format(protect)}"); Slider(value = protect, onValueChange = { protect = it }, valueRange = 0f..0.5f) }
         item {
             Button(onClick = { }, enabled = false, modifier = Modifier.fillMaxWidth()) {
-                Text("CONVERTER — runtime ainda não instalado")
+                Text("CONVERTER — runtime em implementação")
             }
         }
     }
 }
 
 @Composable
-private fun ComingSoonScreen(modifier: Modifier, title: String) {
-    Column(
-        modifier = modifier.fillMaxSize().padding(24.dp),
+private fun SettingsScreen(modifier: Modifier) {
+    val context = LocalContext.current
+    val profile = remember { DeviceProfiler.inspect(context) }
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item { Text("Dispositivo detectado", style = MaterialTheme.typography.titleLarge) }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("${profile.manufacturer} ${profile.model}")
+                    Text("Android ${profile.androidVersion}")
+                    Text("RAM: ${formatBytes(profile.totalRamBytes)}")
+                    Text("RAM disponível: ${formatBytes(profile.availableRamBytes)}")
+                    Text("Armazenamento disponível: ${formatBytes(profile.availableStorageBytes)}")
+                    Text("Vulkan: ${if (profile.hasVulkan) "disponível" else "não detectado"}")
+                    Text("Perfil recomendado: ${profile.recommendedProfile.name}")
+                    Text("Batch inicial recomendado para treino: ${profile.recommendedBatchSize}")
+                }
+            }
+        }
+        item { Text("Componentes de IA serão instaláveis separadamente para não inflar o APK.") }
+    }
+}
+
+@Composable
+private fun ComingSoonScreen(modifier: Modifier, title: String) {
+    Column(modifier = modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(title, style = MaterialTheme.typography.headlineSmall)
         Text("Estrutura criada. Esta área será implementada nas próximas fases sem depender da interface desktop do RVC.")
     }
